@@ -1,4 +1,4 @@
-# Gantt Chart Generator - Modèles Murins CRUPPE
+# Gantt Chart Generator -
 
 ## Description
 
