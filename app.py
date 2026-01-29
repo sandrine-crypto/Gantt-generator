@@ -4,22 +4,21 @@ Interface web pour generer des diagrammes de Gantt a partir de fichiers Excel.
 """
 
 import io
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, List
 
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.dates as mdates
 import pandas as pd
 import streamlit as st
 from pptx import Presentation
 from pptx.util import Inches, Pt
-from pptx.dml.color import RgbColor
 from pptx.enum.text import PP_ALIGN
 from docx import Document
-from docx.shared import Inches as DocxInches, Pt as DocxPt, RGBColor
+from docx.shared import Inches as DocxInches, Pt as DocxPt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from svglib.svglib import svg2rlg
-from reportlab.graphics import renderPM
-from PIL import Image
 
 if TYPE_CHECKING:
     from pandas import DataFrame, Timestamp
@@ -337,12 +336,87 @@ class GanttGenerator:
 
         return export_df.to_csv(index=False)
 
-    def _svg_to_png_bytes(self, svg_content: str) -> bytes:
-        """Convertit un SVG en bytes PNG."""
-        svg_io = io.BytesIO(svg_content.encode('utf-8'))
-        drawing = svg2rlg(svg_io)
+    def _generate_gantt_png(self, product_line_data: "DataFrame", product_line_name: str) -> bytes:
+        """Genere une image PNG du diagramme de Gantt avec matplotlib."""
+        data = product_line_data.sort_values('start_date').reset_index(drop=True)
+        model_count = len(data)
+
+        # Configuration de la figure
+        fig_height = max(4, model_count * 0.5 + 2)
+        fig, ax = plt.subplots(figsize=(14, fig_height))
+
+        # Dessiner les barres du Gantt
+        for idx, row in data.iterrows():
+            start = row['start_date']
+            end = row['end_date']
+            duration = (end - start).days
+            color = self.colors[idx % len(self.colors)]
+
+            # Barre du Gantt
+            ax.barh(
+                y=idx,
+                width=duration,
+                left=start,
+                height=0.6,
+                color=color,
+                alpha=0.85,
+                edgecolor='white',
+                linewidth=1
+            )
+
+            # Label a gauche
+            code = str(row['internal code'])[:CONFIG.MAX_CODE_LENGTH]
+            target = str(row['target'])[:CONFIG.MAX_TARGET_LENGTH]
+            label = f"{code}\n{target}"
+            ax.text(
+                self.min_date - pd.Timedelta(days=5),
+                idx,
+                label,
+                ha='right',
+                va='center',
+                fontsize=8,
+                fontweight='bold'
+            )
+
+            # Duree sur la barre si assez large
+            if duration > 30:
+                mid_date = start + pd.Timedelta(days=duration / 2)
+                ax.text(
+                    mid_date,
+                    idx,
+                    f"{duration}j",
+                    ha='center',
+                    va='center',
+                    fontsize=8,
+                    color='white',
+                    fontweight='bold'
+                )
+
+        # Configuration des axes
+        ax.set_yticks(range(model_count))
+        ax.set_yticklabels([''] * model_count)
+        ax.set_ylim(-0.5, model_count - 0.5)
+        ax.invert_yaxis()
+
+        # Format des dates
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+
+        # Grille
+        ax.grid(axis='x', linestyle='-', alpha=0.3)
+        ax.set_axisbelow(True)
+
+        # Titre
+        ax.set_title(f"{product_line_name} ({model_count} modeles)", fontsize=14, fontweight='bold', pad=20)
+
+        # Ajuster les marges
+        plt.tight_layout()
+        plt.subplots_adjust(left=0.25)
+
+        # Sauvegarder en PNG
         png_io = io.BytesIO()
-        renderPM.drawToFile(drawing, png_io, fmt='PNG', dpi=150)
+        plt.savefig(png_io, format='png', dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close(fig)
         png_io.seek(0)
         return png_io.getvalue()
 
@@ -390,7 +464,8 @@ class GanttGenerator:
         date_para.alignment = PP_ALIGN.CENTER
 
         # Slides pour chaque product line
-        for idx, (product_line, svg) in enumerate(self.gantt_svgs.items(), 1):
+        grouped = self.df_clean.groupby('product line', sort=True)
+        for idx, (product_line, pl_data) in enumerate(grouped, 1):
             slide = prs.slides.add_slide(blank_layout)
 
             # Titre de la slide
@@ -401,28 +476,15 @@ class GanttGenerator:
             title_para.font.size = Pt(24)
             title_para.font.bold = True
 
-            # Convertir SVG en PNG et l'ajouter
+            # Generer le PNG avec matplotlib et l'ajouter
             try:
-                png_bytes = self._svg_to_png_bytes(svg)
+                png_bytes = self._generate_gantt_png(pl_data, product_line)
                 png_io = io.BytesIO(png_bytes)
 
-                # Calculer les dimensions pour adapter l'image
-                with Image.open(io.BytesIO(png_bytes)) as img:
-                    img_width, img_height = img.size
-                    aspect_ratio = img_width / img_height
-
-                    max_width = 12.5
-                    max_height = 6.5
-                    if aspect_ratio > (max_width / max_height):
-                        width = Inches(max_width)
-                        height = Inches(max_width / aspect_ratio)
-                    else:
-                        height = Inches(max_height)
-                        width = Inches(max_height * aspect_ratio)
-
-                left = Inches((13.33 - width.inches) / 2)
+                # Ajouter l'image centree
+                left = Inches(0.4)
                 top = Inches(0.9)
-                slide.shapes.add_picture(png_io, left, top, width=width, height=height)
+                slide.shapes.add_picture(png_io, left, top, width=Inches(12.5))
             except Exception:
                 # En cas d'erreur, ajouter un texte
                 error_box = slide.shapes.add_textbox(Inches(1), Inches(3), Inches(11), Inches(1))
@@ -497,22 +559,15 @@ class GanttGenerator:
         doc.add_page_break()
 
         # Pages pour chaque product line
-        for idx, (product_line, svg) in enumerate(self.gantt_svgs.items(), 1):
+        grouped = self.df_clean.groupby('product line', sort=True)
+        for idx, (product_line, pl_data) in enumerate(grouped, 1):
             doc.add_heading(f'{product_line} ({idx}/{len(self.gantt_svgs)})', level=1)
 
-            # Convertir SVG en PNG et l'ajouter
+            # Generer le PNG avec matplotlib et l'ajouter
             try:
-                png_bytes = self._svg_to_png_bytes(svg)
+                png_bytes = self._generate_gantt_png(pl_data, product_line)
                 png_io = io.BytesIO(png_bytes)
-
-                # Calculer la largeur optimale
-                with Image.open(io.BytesIO(png_bytes)) as img:
-                    img_width, img_height = img.size
-                    aspect_ratio = img_width / img_height
-                    doc_width = 6.5  # pouces
-                    doc_height = doc_width / aspect_ratio
-
-                doc.add_picture(png_io, width=DocxInches(doc_width))
+                doc.add_picture(png_io, width=DocxInches(6.5))
             except Exception:
                 doc.add_paragraph(f"Erreur lors de la generation du graphique pour {product_line}")
 
@@ -687,7 +742,7 @@ def main():
             st.subheader("6. Resume par Product Line")
             summary = generator.df_clean['product line'].value_counts().reset_index()
             summary.columns = ['Product Line', 'Nombre de modeles']
-            st.dataframe(summary, use_container_width=True)
+            st.dataframe(summary, width='stretch')
 
         except ValueError as e:
             st.error(f"Erreur: La feuille 'tableau complet' n'a pas ete trouvee dans le fichier Excel.")
