@@ -4,12 +4,22 @@ Interface web pour generer des diagrammes de Gantt a partir de fichiers Excel.
 """
 
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 import pandas as pd
 import streamlit as st
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.dml.color import RgbColor
+from pptx.enum.text import PP_ALIGN
+from docx import Document
+from docx.shared import Inches as DocxInches, Pt as DocxPt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from svglib.svglib import svg2rlg
+from reportlab.graphics import renderPM
+from PIL import Image
 
 if TYPE_CHECKING:
     from pandas import DataFrame, Timestamp
@@ -19,7 +29,7 @@ if TYPE_CHECKING:
 # CONFIGURATION
 # =============================================================================
 
-@dataclass(frozen=True)
+@dataclass
 class GanttConfig:
     """Configuration centralisee pour les Gantt charts."""
     BAR_HEIGHT: int = 35
@@ -31,13 +41,23 @@ class GanttConfig:
     MIN_BAR_WIDTH: int = 3
     MIN_BAR_WIDTH_FOR_TEXT: int = 40
     GRID_STEP_DAYS: int = 90
-    COLORS: tuple = (
-        '#3498db', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6',
-        '#1abc9c', '#e67e22', '#34495e', '#16a085', '#c0392b'
-    )
     MAX_CODE_LENGTH: int = 25
     MAX_TARGET_LENGTH: int = 25
 
+
+# Couleurs par defaut
+DEFAULT_COLORS = [
+    '#3498db',  # Bleu
+    '#e74c3c',  # Rouge
+    '#2ecc71',  # Vert
+    '#f39c12',  # Orange
+    '#9b59b6',  # Violet
+    '#1abc9c',  # Turquoise
+    '#e67e22',  # Orange fonce
+    '#34495e',  # Gris fonce
+    '#16a085',  # Vert fonce
+    '#c0392b'   # Rouge fonce
+]
 
 CONFIG = GanttConfig()
 
@@ -94,13 +114,14 @@ body {
 class GanttGenerator:
     """Generateur de diagrammes de Gantt pour modeles murins."""
 
-    def __init__(self, df: "DataFrame") -> None:
+    def __init__(self, df: "DataFrame", colors: List[str] = None) -> None:
         self.df = df
         self.df_clean: "DataFrame" = None
         self.gantt_svgs: dict = {}
         self.min_date: "Timestamp" = None
         self.max_date: "Timestamp" = None
         self._date_range_days: int = 0
+        self.colors = colors if colors else DEFAULT_COLORS.copy()
 
     def load_data(self) -> "GanttGenerator":
         """Prepare les donnees."""
@@ -179,7 +200,7 @@ class GanttGenerator:
         start_x = self._compute_x_position(row['start_date'], chart_width)
         end_x = self._compute_x_position(row['end_date'], chart_width)
         bar_width = max(end_x - start_x, CONFIG.MIN_BAR_WIDTH)
-        color = CONFIG.COLORS[idx % len(CONFIG.COLORS)]
+        color = self.colors[idx % len(self.colors)]
 
         ho_date = row['start_date'].strftime('%d/%m/%Y')
         val_date = row['end_date'].strftime('%d/%m/%Y')
@@ -316,6 +337,214 @@ class GanttGenerator:
 
         return export_df.to_csv(index=False)
 
+    def _svg_to_png_bytes(self, svg_content: str) -> bytes:
+        """Convertit un SVG en bytes PNG."""
+        svg_io = io.BytesIO(svg_content.encode('utf-8'))
+        drawing = svg2rlg(svg_io)
+        png_io = io.BytesIO()
+        renderPM.drawToFile(drawing, png_io, fmt='PNG', dpi=150)
+        png_io.seek(0)
+        return png_io.getvalue()
+
+    def export_pptx(self) -> bytes:
+        """Genere une presentation PowerPoint avec les Gantt charts."""
+        prs = Presentation()
+        prs.slide_width = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+
+        # Slide de couverture
+        blank_layout = prs.slide_layouts[6]  # Layout vide
+        slide = prs.slides.add_slide(blank_layout)
+
+        # Titre
+        title_box = slide.shapes.add_textbox(Inches(0.5), Inches(2), Inches(12.33), Inches(1))
+        title_frame = title_box.text_frame
+        title_para = title_frame.paragraphs[0]
+        title_para.text = "Diagrammes de Gantt"
+        title_para.font.size = Pt(44)
+        title_para.font.bold = True
+        title_para.alignment = PP_ALIGN.CENTER
+
+        # Sous-titre
+        subtitle_box = slide.shapes.add_textbox(Inches(0.5), Inches(3.2), Inches(12.33), Inches(0.5))
+        subtitle_frame = subtitle_box.text_frame
+        subtitle_para = subtitle_frame.paragraphs[0]
+        subtitle_para.text = "Modeles Murins Genetiquement Modifies - CRUPPE"
+        subtitle_para.font.size = Pt(24)
+        subtitle_para.alignment = PP_ALIGN.CENTER
+
+        # Statistiques
+        stats_box = slide.shapes.add_textbox(Inches(0.5), Inches(4.5), Inches(12.33), Inches(1))
+        stats_frame = stats_box.text_frame
+        stats_para = stats_frame.paragraphs[0]
+        stats_para.text = f"{len(self.df_clean)} modeles | {len(self.gantt_svgs)} product lines"
+        stats_para.font.size = Pt(18)
+        stats_para.alignment = PP_ALIGN.CENTER
+
+        # Date
+        date_box = slide.shapes.add_textbox(Inches(0.5), Inches(5.2), Inches(12.33), Inches(0.5))
+        date_frame = date_box.text_frame
+        date_para = date_frame.paragraphs[0]
+        date_para.text = f"Periode: {self.min_date.strftime('%d/%m/%Y')} - {self.max_date.strftime('%d/%m/%Y')}"
+        date_para.font.size = Pt(14)
+        date_para.alignment = PP_ALIGN.CENTER
+
+        # Slides pour chaque product line
+        for idx, (product_line, svg) in enumerate(self.gantt_svgs.items(), 1):
+            slide = prs.slides.add_slide(blank_layout)
+
+            # Titre de la slide
+            title_box = slide.shapes.add_textbox(Inches(0.3), Inches(0.2), Inches(12.73), Inches(0.6))
+            title_frame = title_box.text_frame
+            title_para = title_frame.paragraphs[0]
+            title_para.text = f"{product_line} ({idx}/{len(self.gantt_svgs)})"
+            title_para.font.size = Pt(24)
+            title_para.font.bold = True
+
+            # Convertir SVG en PNG et l'ajouter
+            try:
+                png_bytes = self._svg_to_png_bytes(svg)
+                png_io = io.BytesIO(png_bytes)
+
+                # Calculer les dimensions pour adapter l'image
+                with Image.open(io.BytesIO(png_bytes)) as img:
+                    img_width, img_height = img.size
+                    aspect_ratio = img_width / img_height
+
+                    max_width = 12.5
+                    max_height = 6.5
+                    if aspect_ratio > (max_width / max_height):
+                        width = Inches(max_width)
+                        height = Inches(max_width / aspect_ratio)
+                    else:
+                        height = Inches(max_height)
+                        width = Inches(max_height * aspect_ratio)
+
+                left = Inches((13.33 - width.inches) / 2)
+                top = Inches(0.9)
+                slide.shapes.add_picture(png_io, left, top, width=width, height=height)
+            except Exception:
+                # En cas d'erreur, ajouter un texte
+                error_box = slide.shapes.add_textbox(Inches(1), Inches(3), Inches(11), Inches(1))
+                error_frame = error_box.text_frame
+                error_para = error_frame.paragraphs[0]
+                error_para.text = f"Erreur lors de la generation du graphique pour {product_line}"
+                error_para.alignment = PP_ALIGN.CENTER
+
+        # Slide de resume
+        slide = prs.slides.add_slide(blank_layout)
+        title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(12.33), Inches(0.6))
+        title_frame = title_box.text_frame
+        title_para = title_frame.paragraphs[0]
+        title_para.text = "Resume"
+        title_para.font.size = Pt(32)
+        title_para.font.bold = True
+        title_para.alignment = PP_ALIGN.CENTER
+
+        # Tableau de resume
+        counts = self.df_clean['product line'].value_counts().sort_values(ascending=False)
+        rows = len(counts) + 1
+        cols = 2
+
+        table_width = Inches(8)
+        table_height = Inches(min(rows * 0.4, 5.5))
+        left = Inches((13.33 - 8) / 2)
+        top = Inches(1.2)
+
+        table = slide.shapes.add_table(rows, cols, left, top, table_width, table_height).table
+
+        # En-tetes
+        table.cell(0, 0).text = "Product Line"
+        table.cell(0, 1).text = "Modeles"
+
+        for row_idx, (pl, count) in enumerate(counts.items(), 1):
+            table.cell(row_idx, 0).text = str(pl)
+            table.cell(row_idx, 1).text = str(count)
+
+        # Sauvegarder
+        pptx_io = io.BytesIO()
+        prs.save(pptx_io)
+        pptx_io.seek(0)
+        return pptx_io.getvalue()
+
+    def export_docx(self) -> bytes:
+        """Genere un document Word avec les Gantt charts."""
+        doc = Document()
+
+        # Titre
+        title = doc.add_heading('Diagrammes de Gantt', 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Sous-titre
+        subtitle = doc.add_paragraph('Modeles Murins Genetiquement Modifies - CRUPPE')
+        subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Statistiques
+        stats = doc.add_paragraph()
+        stats.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        stats.add_run(f"{len(self.df_clean)} modeles").bold = True
+        stats.add_run(f" repartis dans ")
+        stats.add_run(f"{len(self.gantt_svgs)} product lines").bold = True
+
+        doc.add_paragraph(
+            f"Periode: {self.min_date.strftime('%d/%m/%Y')} - {self.max_date.strftime('%d/%m/%Y')}"
+        ).alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        doc.add_paragraph(
+            f"Genere le {datetime.now().strftime('%d/%m/%Y a %H:%M')}"
+        ).alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        doc.add_page_break()
+
+        # Pages pour chaque product line
+        for idx, (product_line, svg) in enumerate(self.gantt_svgs.items(), 1):
+            doc.add_heading(f'{product_line} ({idx}/{len(self.gantt_svgs)})', level=1)
+
+            # Convertir SVG en PNG et l'ajouter
+            try:
+                png_bytes = self._svg_to_png_bytes(svg)
+                png_io = io.BytesIO(png_bytes)
+
+                # Calculer la largeur optimale
+                with Image.open(io.BytesIO(png_bytes)) as img:
+                    img_width, img_height = img.size
+                    aspect_ratio = img_width / img_height
+                    doc_width = 6.5  # pouces
+                    doc_height = doc_width / aspect_ratio
+
+                doc.add_picture(png_io, width=DocxInches(doc_width))
+            except Exception:
+                doc.add_paragraph(f"Erreur lors de la generation du graphique pour {product_line}")
+
+            doc.add_page_break()
+
+        # Page de resume
+        doc.add_heading('Resume', level=1)
+
+        # Tableau de resume
+        counts = self.df_clean['product line'].value_counts().sort_values(ascending=False)
+        table = doc.add_table(rows=len(counts) + 1, cols=2)
+        table.style = 'Table Grid'
+
+        # En-tetes
+        hdr_cells = table.rows[0].cells
+        hdr_cells[0].text = 'Product Line'
+        hdr_cells[1].text = 'Modeles'
+        for cell in hdr_cells:
+            cell.paragraphs[0].runs[0].bold = True
+
+        # Donnees
+        for row_idx, (pl, count) in enumerate(counts.items(), 1):
+            row_cells = table.rows[row_idx].cells
+            row_cells[0].text = str(pl)
+            row_cells[1].text = str(count)
+
+        # Sauvegarder
+        docx_io = io.BytesIO()
+        doc.save(docx_io)
+        docx_io.seek(0)
+        return docx_io.getvalue()
+
 
 # =============================================================================
 # APPLICATION STREAMLIT
@@ -344,8 +573,9 @@ def main():
            - `product line` - Categorie du modele
            - `date disponibilite HO` - Date de debut
            - `data de fin de validation (fin du dernier MI critique tagge validation)` - Date de fin
-        3. **Uploadez le fichier** via le bouton ci-dessous
-        4. **Telechargez les resultats** (HTML et CSV)
+        3. **Personnalisez les couleurs** des barres du Gantt (optionnel)
+        4. **Uploadez le fichier** via le bouton ci-dessous
+        5. **Telechargez les resultats** (PowerPoint, Word ou CSV)
         """)
 
     # File upload
@@ -356,6 +586,26 @@ def main():
         help="Le fichier doit contenir une feuille 'tableau complet'"
     )
 
+    # Color customization section
+    st.subheader("2. Personnaliser les couleurs")
+    with st.expander("Modifier les couleurs des barres", expanded=False):
+        st.markdown("Cliquez sur chaque couleur pour la modifier:")
+        color_cols = st.columns(5)
+        custom_colors = []
+        color_names = [
+            "Bleu", "Rouge", "Vert", "Orange", "Violet",
+            "Turquoise", "Orange fonce", "Gris fonce", "Vert fonce", "Rouge fonce"
+        ]
+        for i, default_color in enumerate(DEFAULT_COLORS):
+            col_idx = i % 5
+            with color_cols[col_idx]:
+                color = st.color_picker(
+                    color_names[i],
+                    default_color,
+                    key=f"color_{i}"
+                )
+                custom_colors.append(color)
+
     if uploaded_file is not None:
         try:
             # Load data
@@ -365,10 +615,10 @@ def main():
             st.success(f"Fichier charge: {len(df)} lignes trouvees")
 
             # Generate charts
-            st.subheader("2. Generation des Gantt Charts")
+            st.subheader("3. Generation des Gantt Charts")
 
             with st.spinner("Generation en cours..."):
-                generator = GanttGenerator(df)
+                generator = GanttGenerator(df, colors=custom_colors)
                 generator.load_data()
                 generator.generate_gantt_charts()
 
@@ -383,7 +633,7 @@ def main():
                     st.metric("Periode", f"{generator._date_range_days} jours")
 
             # Display charts
-            st.subheader("3. Visualisation des Gantt Charts")
+            st.subheader("4. Visualisation des Gantt Charts")
 
             selected_pl = st.selectbox(
                 "Selectionnez une Product Line:",
@@ -400,20 +650,31 @@ def main():
                 )
 
             # Downloads
-            st.subheader("4. Telecharger les resultats")
+            st.subheader("5. Telecharger les resultats")
 
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
 
             with col1:
-                html_content = generator.generate_html_slides()
+                with st.spinner("Preparation PowerPoint..."):
+                    pptx_content = generator.export_pptx()
                 st.download_button(
-                    label="📄 Telecharger HTML (toutes les slides)",
-                    data=html_content,
-                    file_name="gantt_slides.html",
-                    mime="text/html"
+                    label="📽️ Telecharger PowerPoint (.pptx)",
+                    data=pptx_content,
+                    file_name="gantt_slides.pptx",
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
                 )
 
             with col2:
+                with st.spinner("Preparation Word..."):
+                    docx_content = generator.export_docx()
+                st.download_button(
+                    label="📄 Telecharger Word (.docx)",
+                    data=docx_content,
+                    file_name="gantt_document.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+
+            with col3:
                 csv_content = generator.export_csv()
                 st.download_button(
                     label="📊 Telecharger CSV (donnees)",
@@ -423,7 +684,7 @@ def main():
                 )
 
             # Summary table
-            st.subheader("5. Resume par Product Line")
+            st.subheader("6. Resume par Product Line")
             summary = generator.df_clean['product line'].value_counts().reset_index()
             summary.columns = ['Product Line', 'Nombre de modeles']
             st.dataframe(summary, use_container_width=True)
