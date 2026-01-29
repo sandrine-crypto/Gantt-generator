@@ -1,56 +1,78 @@
-# Gantt Chart Generator -
+# Gantt Chart Generator - CRUPPE
 
 ## Description
 
-Script Python d'automatisation complète pour générer des diagrammes de Gantt à partir des données d'inventaire des modèles murins génétiquement modifiés.
+Application web Streamlit pour generer des diagrammes de Gantt a partir des donnees d'inventaire des modeles murins genetiquement modifies.
 
-**Fonctionnalités:**
-- ✅ Parsing automatique du fichier Excel (feuille "tableau complet")
-- ✅ Création d'un Gantt chart **par product line**
-- ✅ Identification des modèles par **internal code**
-- ✅ Sous-titre affichant **target** + **dates HO/validation**
-- ✅ Export en **slides HTML interactives** (13 slides)
-- ✅ Export en **CSV de synthèse**
-- ✅ Visualisation des timelines en SVG natif (pas de dépendance graphique)
+**Fonctionnalites:**
+- Upload de fichier Excel via interface web
+- Parsing automatique de la feuille "tableau complet"
+- Creation d'un Gantt chart **par product line**
+- Identification des modeles par **internal code**
+- Sous-titre affichant **target** + **dates HO/validation**
+- Export en **slides HTML interactives**
+- Export en **CSV de synthese**
+- Visualisation des timelines en SVG natif
 
 ---
 
-## Installation
+## Deploiement sur Streamlit Cloud
 
-### Prérequis
+### Methode rapide (recommandee)
+
+1. **Connectez-vous** sur [share.streamlit.io](https://share.streamlit.io)
+2. **Cliquez** sur "New app"
+3. **Selectionnez** ce repository GitHub
+4. **Configurez:**
+   - Branch: `main` (ou `claude/finalize-streamlit-deploy-1mhEw`)
+   - Main file path: `app.py`
+5. **Cliquez** sur "Deploy"
+
+L'application sera disponible en quelques minutes!
+
+---
+
+## Installation locale
+
+### Prerequis
 - Python 3.8+
-- pandas
-- openpyxl
 
 ### Setup
 
 ```bash
-# Installer les dépendances
-pip install pandas openpyxl
+# Cloner le repo
+git clone https://github.com/sandrine-crypto/Gantt-generator.git
+cd Gantt-generator
 
-# Vérifier l'installation
-python gantt_generator.py --help
+# Installer les dependances
+pip install -r requirements.txt
+
+# Lancer l'application
+streamlit run app.py
 ```
+
+L'application s'ouvre automatiquement dans votre navigateur a l'adresse `http://localhost:8501`
 
 ---
 
 ## Utilisation
 
-### Mode basique
+### Via l'interface web (Streamlit)
+
+1. **Ouvrez l'application** (locale ou deployee)
+2. **Uploadez** votre fichier Excel
+3. **Visualisez** les Gantt charts par product line
+4. **Telechargez** les resultats (HTML et CSV)
+
+### Mode ligne de commande (optionnel)
+
 ```bash
-python gantt_generator.py models-list-20260105-CRUPPE.xlsx
+python gantt_generator_V2.py models-list-20260105-CRUPPE.xlsx
 ```
 
-Génère:
-- `gantt_slides.html` - Slides HTML (13 pages)
-- `gantt_models_export.csv` - Données d'export
-
-### Mode personnalisé
-```bash
-python gantt_generator.py models-list-20260105-CRUPPE.xlsx \
-    --html custom_gantt.html \
-    --csv custom_export.csv
-```
+Genere:
+- `gantt_slides.html` - Slides HTML
+- `gantt_models_export.csv` - Donnees d'export
 
 ---
 
